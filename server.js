@@ -56,16 +56,19 @@ function requireAdmin(req, res, next) {
 }
 
 (async () => {
-  const db = await mysql.createConnection({
-    host: "localhost",
-    user: "root",
-    password: "ostun123",
-    database: "reservas_sm",
+  const { Pool } = require("pg");
+
+  const db = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: {
+      rejectUnauthorized: false,
+    },
   });
 
   global.db = db;
 
-  console.log("Conectado a MySQL correctamente ✔");
+  console.log("Conectado a PostgreSQL en Render ✔");
+
 
   // ========== REGISTRO ==========
   app.post("/api/auth/register", async (req, res) => {
