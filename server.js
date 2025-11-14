@@ -1,6 +1,6 @@
 // =========================================
-//  BACKEND RESERVAS COMPLETO Y CORREGIDO
-//  PARA RENDER + POSTGRES + SESIONES
+//  BACKEND RESERVAS — COMPLETO Y CORREGIDO
+//  Render + PostgreSQL + Sesiones
 // =========================================
 
 import express from "express";
@@ -14,18 +14,33 @@ dotenv.config();
 const app = express();
 
 // ===============================
-//  MIDDLEWARES
+//  MIDDLEWARES BÁSICOS
 // ===============================
 app.use(express.json());
+
+// =========================================
+//  CABECERAS DE SEGURIDAD (Evita alerta roja en Chrome)
+// =========================================
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  next();
+});
+
+// =========================================
+//  CORS
+// =========================================
 app.use(
   cors({
-    origin: true,
-    credentials: true,
+    origin: true,          // frontend desde cualquier dominio permitido
+    credentials: true,     // enviar cookies de sesión
   })
 );
 
 app.set("trust proxy", 1);
 
+// =========================================
+//  SESIÓN (Render usa HTTPS siempre)
+// =========================================
 app.use(
   session({
     secret: process.env.SESSION_SECRET,
@@ -35,18 +50,17 @@ app.use(
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
       httpOnly: true,
-      maxAge: 1000 * 60 * 60 * 4,
+      maxAge: 1000 * 60 * 60 * 4, // 4 horas
     },
   })
 );
 
 // ===============================
-//  CONEXIÓN A POSTGRES (Render)
+//  CONEXIÓN A POSTGRES
 // ===============================
-
 const db = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },  // ← IMPORTANTE
+  ssl: { rejectUnauthorized: false },
 });
 
 db.connect()
@@ -57,7 +71,8 @@ db.connect()
 //  HELPERS
 // ===============================
 function requireLogin(req, res, next) {
-  if (!req.session.user) return res.status(401).json({ error: "Debes iniciar sesión" });
+  if (!req.session.user)
+    return res.status(401).json({ error: "Debes iniciar sesión" });
   next();
 }
 
@@ -69,7 +84,7 @@ async function isAdmin(req) {
 //  AUTH
 // ===============================
 
-// Registrar usuario
+// Registro usuario
 app.post("/api/auth/register", async (req, res) => {
   try {
     const { nombre, correo, contraseña } = req.body;
@@ -84,24 +99,35 @@ app.post("/api/auth/register", async (req, res) => {
     res.json({ message: "Registro exitoso" });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Error al registrar usuario" });
+    res.status(500).json({ error: "Error registrando usuario" });
   }
 });
 
-// Login
+// Login usuario
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { correo, contraseña } = req.body;
-    const result = await db.query("SELECT * FROM usuarios WHERE correo = $1", [correo]);
 
-    if (result.rows.length === 0) return res.status(404).json({ error: "Usuario no existe" });
+    const result = await db.query(
+      "SELECT * FROM usuarios WHERE correo=$1",
+      [correo]
+    );
+
+    if (result.rows.length === 0)
+      return res.status(404).json({ error: "Usuario no existe" });
 
     const user = result.rows[0];
     const ok = await bcrypt.compare(contraseña, user.contraseña);
 
-    if (!ok) return res.status(401).json({ error: "Contraseña incorrecta" });
+    if (!ok)
+      return res.status(401).json({ error: "Contraseña incorrecta" });
 
-    req.session.user = { id: user.id, correo: user.correo, role: "cliente" };
+    req.session.user = {
+      id: user.id,
+      correo: user.correo,
+      role: "cliente",
+    };
+
     res.json({ message: "Login exitoso", user: req.session.user });
   } catch (err) {
     console.error(err);
@@ -119,24 +145,28 @@ app.post("/api/auth/logout", (req, res) => {
 // ===============================
 app.get("/api/propiedades", async (req, res) => {
   try {
-    const result = await db.query("SELECT * FROM propiedades ORDER BY id ASC");
+    const result = await db.query(
+      "SELECT * FROM propiedades ORDER BY id ASC"
+    );
     res.json(result.rows);
   } catch (err) {
-    res.status(500).json({ error: "Error al obtener propiedades" });
+    res.status(500).json({ error: "Error obteniendo propiedades" });
   }
 });
 
-// Obtener propiedad
 app.get("/api/propiedades/:id", async (req, res) => {
   try {
-    const result = await db.query("SELECT * FROM propiedades WHERE id = $1", [req.params.id]);
+    const result = await db.query(
+      "SELECT * FROM propiedades WHERE id=$1",
+      [req.params.id]
+    );
 
     if (result.rows.length === 0)
       return res.status(404).json({ error: "Propiedad no encontrada" });
 
     res.json(result.rows[0]);
-  } catch {
-    res.status(500).json({ error: "Error al obtener propiedad" });
+  } catch (err) {
+    res.status(500).json({ error: "Error obteniendo propiedad" });
   }
 });
 
@@ -150,28 +180,28 @@ app.post("/api/reservations", requireLogin, async (req, res) => {
     const usuario_id = req.session.user.id;
     const { propiedad_id, fecha_inicio, fecha_fin } = req.body;
 
-    const r = await db.query(
+    const result = await db.query(
       `INSERT INTO reservas (usuario_id, propiedad_id, fecha_inicio, fecha_fin, estado)
-       VALUES ($1,$2,$3,$4,'pendiente') RETURNING *`,
+       VALUES ($1,$2,$3,$4,'pendiente')
+       RETURNING *`,
       [usuario_id, propiedad_id, fecha_inicio, fecha_fin]
     );
 
-    res.json(r.rows[0]);
+    res.json(result.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: "Error al crear reserva" });
+    res.status(500).json({ error: "Error creando reserva" });
   }
 });
 
-// Obtener reservas por email
+// Obtener reservas del usuario
 app.get("/api/reservations/user/:email", async (req, res) => {
   try {
-    const userResult = await db.query("SELECT id FROM usuarios WHERE correo = $1", [
-      req.params.email,
-    ]);
+    const u = await db.query(
+      "SELECT id FROM usuarios WHERE correo = $1",
+      [req.params.email]
+    );
 
-    if (userResult.rows.length === 0) return res.json([]);
-
-    const usuario_id = userResult.rows[0].id;
+    if (u.rows.length === 0) return res.json([]);
 
     const result = await db.query(
       `SELECT r.id, r.fecha_inicio, r.fecha_fin, r.estado,
@@ -180,29 +210,36 @@ app.get("/api/reservations/user/:email", async (req, res) => {
        JOIN propiedades p ON p.id = r.propiedad_id
        WHERE usuario_id = $1
        ORDER BY r.id DESC`,
-      [usuario_id]
+      [u.rows[0].id]
     );
 
     res.json(result.rows);
-  } catch {
-    res.status(500).json({ error: "Error al obtener reservas" });
+  } catch (err) {
+    res.status(500).json({ error: "Error obteniendo reservas" });
   }
 });
 
 // Cancelar reserva
 app.delete("/api/reservations/:id", requireLogin, async (req, res) => {
   try {
-    await db.query("UPDATE reservas SET estado='cancelada' WHERE id=$1", [req.params.id]);
+    await db.query("UPDATE reservas SET estado='cancelada' WHERE id=$1", [
+      req.params.id,
+    ]);
     res.json({ message: "Reserva cancelada" });
-  } catch {
-    res.status(500).json({ error: "Error al cancelar" });
+  } catch (err) {
+    res.status(500).json({ error: "Error cancelando reserva" });
   }
 });
 
 // ===============================
-//  START SERVER
+//  RUTA RAÍZ
 // ===============================
 app.get("/", (req, res) => res.send("API Reservas OK"));
 
+// ===============================
+//  INICIAR SERVIDOR
+// ===============================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("🚀 Server running on port " + PORT));
+app.listen(PORT, () =>
+  console.log("🚀 Server running on port " + PORT)
+);
