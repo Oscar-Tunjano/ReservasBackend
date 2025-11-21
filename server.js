@@ -14,33 +14,28 @@ dotenv.config();
 const app = express();
 
 // ===============================
-//  MIDDLEWARES BÁSICOS
+//  MIDDLEWARES
 // ===============================
 app.use(express.json());
 
-// =========================================
-//  CABECERAS DE SEGURIDAD (Evita alerta roja en Chrome)
-// =========================================
+// Seguridad mínima
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   next();
 });
 
-// =========================================
-//  CORS
-// =========================================
 app.use(
   cors({
-    origin: true,          // frontend desde cualquier dominio permitido
-    credentials: true,     // enviar cookies de sesión
+    origin: true,          // Permite frontend Vercel y tu dominio
+    credentials: true,     // Necesario para cookies y sesiones
   })
 );
 
 app.set("trust proxy", 1);
 
-// =========================================
-//  SESIÓN (Render usa HTTPS siempre)
-// =========================================
+// ===============================
+//  SESIONES
+// ===============================
 app.use(
   session({
     secret: process.env.SESSION_SECRET,
@@ -56,7 +51,7 @@ app.use(
 );
 
 // ===============================
-//  CONEXIÓN A POSTGRES
+//  CONEXIÓN A POSTGRESQL (Render)
 // ===============================
 const db = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -76,52 +71,49 @@ function requireLogin(req, res, next) {
   next();
 }
 
-async function isAdmin(req) {
-  return req.session.user?.role === "admin";
-}
-
 // ===============================
 //  AUTH
 // ===============================
 
-// Registro usuario
+// Registro
 app.post("/api/auth/register", async (req, res) => {
   try {
-    const { nombre, correo, contraseña } = req.body;
+    const { nombre, correo, contrasena } = req.body;
 
-    const hashed = await bcrypt.hash(contraseña, 10);
+    const hashed = await bcrypt.hash(contrasena, 10);
 
     await db.query(
-      "INSERT INTO usuarios (nombre, correo, contraseña) VALUES ($1,$2,$3)",
+      "INSERT INTO usuarios (nombre, correo, contrasena) VALUES ($1,$2,$3)",
       [nombre, correo, hashed]
     );
 
     res.json({ message: "Registro exitoso" });
   } catch (err) {
-    console.error(err);
+    console.error("❌ ERROR REGISTRO:", err);
     res.status(500).json({ error: "Error registrando usuario" });
   }
 });
 
-// Login usuario
+// Login
 app.post("/api/auth/login", async (req, res) => {
   try {
-    const { correo, contraseña } = req.body;
+    const { correo, contrasena } = req.body;
 
-    const result = await db.query(
-      "SELECT * FROM usuarios WHERE correo=$1",
-      [correo]
-    );
+    const result = await db.query("SELECT * FROM usuarios WHERE correo=$1", [
+      correo,
+    ]);
 
     if (result.rows.length === 0)
       return res.status(404).json({ error: "Usuario no existe" });
 
     const user = result.rows[0];
-    const ok = await bcrypt.compare(contraseña, user.contraseña);
+
+    const ok = await bcrypt.compare(contrasena, user.contrasena);
 
     if (!ok)
       return res.status(401).json({ error: "Contraseña incorrecta" });
 
+    // guardar sesión
     req.session.user = {
       id: user.id,
       correo: user.correo,
@@ -130,7 +122,7 @@ app.post("/api/auth/login", async (req, res) => {
 
     res.json({ message: "Login exitoso", user: req.session.user });
   } catch (err) {
-    console.error(err);
+    console.error("❌ ERROR LOGIN:", err);
     res.status(500).json({ error: "Error en login" });
   }
 });
@@ -150,6 +142,7 @@ app.get("/api/propiedades", async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
+    console.error("❌ ERROR PROPIEDADES:", err);
     res.status(500).json({ error: "Error obteniendo propiedades" });
   }
 });
@@ -189,6 +182,7 @@ app.post("/api/reservations", requireLogin, async (req, res) => {
 
     res.json(result.rows[0]);
   } catch (err) {
+    console.error("❌ ERROR CREANDO RESERVA:", err);
     res.status(500).json({ error: "Error creando reserva" });
   }
 });
@@ -215,6 +209,7 @@ app.get("/api/reservations/user/:email", async (req, res) => {
 
     res.json(result.rows);
   } catch (err) {
+    console.error("❌ ERROR OBTENIENDO RESERVAS:", err);
     res.status(500).json({ error: "Error obteniendo reservas" });
   }
 });
@@ -232,7 +227,7 @@ app.delete("/api/reservations/:id", requireLogin, async (req, res) => {
 });
 
 // ===============================
-//  RUTA RAÍZ
+//  RUTA PRINCIPAL
 // ===============================
 app.get("/", (req, res) => res.send("API Reservas OK"));
 
