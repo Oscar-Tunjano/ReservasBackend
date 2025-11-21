@@ -1,10 +1,13 @@
-// server.js
+// ===============================================
+//  SERVER.JS — BACKEND RESERVAS SM (POSTGRESQL)
+// ===============================================
+
 import express from "express";
 import session from "express-session";
+import pgSession from "connect-pg-simple";
 import cors from "cors";
 import dotenv from "dotenv";
 import bcrypt from "bcryptjs";
-
 import { db } from "./db.js";
 import initDatabase from "./init_db.js";
 
@@ -32,10 +35,17 @@ app.use(
 app.set("trust proxy", 1);
 
 // ===============================
-// SESIONES
+// SESIONES (POSTGRESQL)
 // ===============================
+const PGSessionStore = pgSession(session);
+
 app.use(
   session({
+    store: new PGSessionStore({
+      pool: db,
+      tableName: "sessions",
+      createTableIfMissing: true,
+    }),
     secret: process.env.SESSION_SECRET || "cambiar_este_secreto",
     resave: false,
     saveUninitialized: false,
@@ -52,7 +62,8 @@ app.use(
 // HELPERS
 // ===============================
 function requireLogin(req, res, next) {
-  if (!req.session.user) return res.status(401).json({ error: "Debes iniciar sesión" });
+  if (!req.session.user)
+    return res.status(401).json({ error: "Debes iniciar sesión" });
   next();
 }
 
@@ -63,22 +74,27 @@ function requireLogin(req, res, next) {
 // Registro
 app.post("/api/auth/register", async (req, res) => {
   try {
-    const { nombre, correo, contrasena } = req.body;
+    const { nombre, correo, password } = req.body;
 
-    if (!nombre || !correo || !contrasena) {
-      return res.status(400).json({ error: "Faltan campos: nombre, correo o contraseña" });
+    if (!nombre || !correo || !password) {
+      return res
+        .status(400)
+        .json({ error: "Faltan campos: nombre, correo, password" });
     }
 
     // verificar si correo ya existe
-    const exists = await db.query("SELECT id FROM usuarios WHERE correo = $1", [correo]);
+    const exists = await db.query("SELECT id FROM usuarios WHERE correo=$1", [
+      correo,
+    ]);
+
     if (exists.rows.length > 0) {
       return res.status(409).json({ error: "El correo ya está registrado" });
     }
 
-    const hashed = await bcrypt.hash(contrasena, 10);
+    const hashed = await bcrypt.hash(password, 10);
 
     await db.query(
-      "INSERT INTO usuarios (nombre, correo, contrasena) VALUES ($1, $2, $3)",
+      "INSERT INTO usuarios (nombre, correo, contrasena) VALUES ($1,$2,$3)",
       [nombre, correo, hashed]
     );
 
@@ -92,31 +108,28 @@ app.post("/api/auth/register", async (req, res) => {
 // Login
 app.post("/api/auth/login", async (req, res) => {
   try {
-    const { correo, contrasena } = req.body;
+    const { correo, password } = req.body;
 
-    if (!correo || !contrasena) {
+    if (!correo || !password)
       return res.status(400).json({ error: "Debe enviar correo y contraseña" });
-    }
 
-    const result = await db.query("SELECT * FROM usuarios WHERE correo=$1", [correo]);
+    const result = await db.query("SELECT * FROM usuarios WHERE correo=$1", [
+      correo,
+    ]);
 
-    if (result.rows.length === 0) return res.status(404).json({ error: "Usuario no existe" });
+    if (result.rows.length === 0)
+      return res.status(404).json({ error: "Usuario no existe" });
 
     const user = result.rows[0];
 
-    // user.contrasena siempre debe existir (en la DB)
-    if (!user.contrasena) {
-      return res.status(500).json({ error: "Usuario sin contraseña en la base de datos" });
-    }
-
-    const ok = await bcrypt.compare(contrasena, user.contrasena);
+    const ok = await bcrypt.compare(password, user.contrasena);
 
     if (!ok) return res.status(401).json({ error: "Contraseña incorrecta" });
 
     req.session.user = {
       id: user.id,
       correo: user.correo,
-      role: user.role || "cliente",
+      role: user.role,
     };
 
     res.json({ message: "Login exitoso", user: req.session.user });
@@ -146,9 +159,12 @@ app.get("/api/propiedades", async (req, res) => {
 
 app.get("/api/propiedades/:id", async (req, res) => {
   try {
-    const result = await db.query("SELECT * FROM propiedades WHERE id=$1", [req.params.id]);
+    const result = await db.query("SELECT * FROM propiedades WHERE id=$1", [
+      req.params.id,
+    ]);
 
-    if (result.rows.length === 0) return res.status(404).json({ error: "Propiedad no encontrada" });
+    if (result.rows.length === 0)
+      return res.status(404).json({ error: "Propiedad no encontrada" });
 
     res.json(result.rows[0]);
   } catch (err) {
@@ -166,7 +182,9 @@ app.post("/api/reservas", requireLogin, async (req, res) => {
     const { propiedad_id, fecha_inicio, fecha_fin } = req.body;
 
     if (!propiedad_id || !fecha_inicio || !fecha_fin) {
-      return res.status(400).json({ error: "Faltan campos para crear la reserva" });
+      return res
+        .status(400)
+        .json({ error: "Faltan campos para crear la reserva" });
     }
 
     const result = await db.query(
@@ -182,10 +200,12 @@ app.post("/api/reservas", requireLogin, async (req, res) => {
   }
 });
 
-// Obtener reservas del usuario por email
-app.get("/api/reservas/user/:email", async (req, res) => {
+// Obtener reservas por correo
+app.get("/api/reservas/user/:correo", async (req, res) => {
   try {
-    const u = await db.query("SELECT id FROM usuarios WHERE correo = $1", [req.params.email]);
+    const u = await db.query("SELECT id FROM usuarios WHERE correo=$1", [
+      req.params.correo,
+    ]);
 
     if (u.rows.length === 0) return res.json([]);
 
@@ -209,7 +229,9 @@ app.get("/api/reservas/user/:email", async (req, res) => {
 // Cancelar reserva
 app.delete("/api/reservas/:id", requireLogin, async (req, res) => {
   try {
-    await db.query("UPDATE reservas SET estado='cancelada' WHERE id=$1", [req.params.id]);
+    await db.query("UPDATE reservas SET estado='cancelada' WHERE id=$1", [
+      req.params.id,
+    ]);
     res.json({ message: "Reserva cancelada" });
   } catch (err) {
     console.error("❌ ERROR CANCELANDO RESERVA:", err);
@@ -220,16 +242,16 @@ app.delete("/api/reservas/:id", requireLogin, async (req, res) => {
 // ===============================
 // RUTA PRINCIPAL
 // ===============================
-app.get("/", (req, res) => res.send("API Reservas OK"));
+app.get("/", (req, res) => res.send("API Reservas SM OK — PostgreSQL"));
 
 // ===============================
-// INICIAR SERVIDOR + INIT DB
+// INICIAR SERVIDOR
 // ===============================
 const PORT = process.env.PORT || 3000;
 
 (async () => {
-  // inicializar tablas (solo si no existen)
   await initDatabase();
-
-  app.listen(PORT, () => console.log("🚀 Server running on port " + PORT));
+  app.listen(PORT, () =>
+    console.log("🚀 Server running on port " + PORT)
+  );
 })();
