@@ -1,12 +1,14 @@
-const mysql = require("mysql2");
-require("dotenv").config();
+// db.js
+import { Pool } from "pg";
+import dotenv from "dotenv";
+dotenv.config();
 
-const db = mysql.createPool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASS,
-  database: process.env.DB_NAME,
+export const db = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
 });
 
-module.exports = db;
+db.on("connect", () => console.log("✅ Pool conectado a PostgreSQL"));
+db.on("error", (err) => console.error("❌ Error en pool Postgres:", err));
+
 
