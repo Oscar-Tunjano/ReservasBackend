@@ -19,14 +19,13 @@ const app = express();
 // ===============================================
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
-// Necesario para cookies secure con proxy (Render)
 app.set("trust proxy", 1);
 
 // ===============================================
-// CORS — Permitir frontend de Vercel
+// CORS — Permitir frontend de Vercel y tu dominio
 // ===============================================
-const FRONTEND = process.env.FRONTEND_ORIGIN ||
+const FRONTEND =
+  process.env.FRONTEND_ORIGIN ||
   "https://www.reservatuhospedajeensantamarta.site";
 
 app.use(
@@ -52,16 +51,16 @@ app.use(
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: process.env.NODE_ENV === "production", // REQUERIDO para Render
-      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
       sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      maxAge: 1000 * 60 * 60 * 4, // 4 horas
+      httpOnly: true,
+      maxAge: 1000 * 60 * 60 * 4,
     },
   })
 );
 
 // ===============================================
-// HELPER — Requiere sesión iniciada
+// HELPER — Requiere sesión
 // ===============================================
 function requireLogin(req, res, next) {
   if (!req.session.user)
@@ -76,9 +75,10 @@ function requireLogin(req, res, next) {
 // Registro
 app.post("/api/auth/register", async (req, res) => {
   try {
-    const { nombre, correo, password } = req.body;
+    const { nombre, correo, password, contrasena } = req.body;
+    const pass = password || contrasena;
 
-    if (!nombre || !correo || !password)
+    if (!nombre || !correo || !pass)
       return res.status(400).json({ error: "Faltan datos obligatorios" });
 
     const exists = await db.query("SELECT id FROM usuarios WHERE correo=$1", [
@@ -88,7 +88,7 @@ app.post("/api/auth/register", async (req, res) => {
     if (exists.rows.length > 0)
       return res.status(409).json({ error: "Correo ya registrado" });
 
-    const hashed = await bcrypt.hash(password, 10);
+    const hashed = await bcrypt.hash(pass, 10);
 
     await db.query(
       "INSERT INTO usuarios (nombre, correo, contrasena) VALUES ($1,$2,$3)",
@@ -120,15 +120,15 @@ app.post("/api/auth/login", async (req, res) => {
       return res.status(404).json({ error: "Usuario no existe" });
 
     const user = result.rows[0];
-
     const ok = await bcrypt.compare(password, user.contrasena);
+
     if (!ok)
       return res.status(401).json({ error: "Contraseña incorrecta" });
 
     req.session.user = {
       id: user.id,
       correo: user.correo,
-      role: user.role,
+      role: user.role || "cliente",
     };
 
     res.json({
@@ -178,8 +178,10 @@ app.get("/api/propiedades/:id", async (req, res) => {
 });
 
 // ===============================================
-// RESERVAS
+// RESERVAS — CLIENTE
 // ===============================================
+
+// Crear reserva
 app.post("/api/reservas", requireLogin, async (req, res) => {
   try {
     const usuario_id = req.session.user.id;
@@ -241,7 +243,68 @@ app.delete("/api/reservas/:id", requireLogin, async (req, res) => {
 });
 
 // ===============================================
-// CONTACTO (Formulario Contacto HTML)
+// PANEL ADMINISTRADOR
+// ===============================================
+
+// Ver TODAS las reservas
+app.get("/api/admin/reservations", async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT r.id,
+             r.fecha_inicio,
+             r.fecha_fin,
+             r.estado,
+             p.titulo AS propiedad,
+             u.correo AS usuario
+      FROM reservas r
+      JOIN propiedades p ON p.id = r.propiedad_id
+      JOIN usuarios u ON u.id = r.usuario_id
+      ORDER BY r.id DESC
+    `);
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error("❌ ADMIN ERROR GET RESERVAS:", err);
+    res.status(500).json({ error: "Error obteniendo reservas" });
+  }
+});
+
+// Cambiar estado
+app.put("/api/admin/reservations/:id", async (req, res) => {
+  try {
+    const { estado } = req.body;
+
+    if (!estado)
+      return res.status(400).json({ error: "Estado requerido" });
+
+    await db.query(
+      "UPDATE reservas SET estado=$1 WHERE id=$2",
+      [estado, req.params.id]
+    );
+
+    res.json({ message: "Estado actualizado correctamente" });
+  } catch (err) {
+    console.error("❌ ADMIN ERROR UPDATE:", err);
+    res.status(500).json({ error: "Error actualizando estado" });
+  }
+});
+
+// Eliminar reserva
+app.delete("/api/admin/reservations/:id", async (req, res) => {
+  try {
+    await db.query("DELETE FROM reservas WHERE id=$1", [
+      req.params.id,
+    ]);
+
+    res.json({ message: "Reserva eliminada" });
+  } catch (err) {
+    console.error("❌ ADMIN ERROR DELETE:", err);
+    res.status(500).json({ error: "Error eliminando reserva" });
+  }
+});
+
+// ===============================================
+// CONTACTO — Formulario Contacto
 // ===============================================
 app.post("/api/contact", async (req, res) => {
   try {
