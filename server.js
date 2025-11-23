@@ -1,5 +1,5 @@
 // ===============================================
-//  SERVER.JS — BACKEND RESERVAS SM (POSTGRESQL)
+// SERVER.JS — Backend Reservas SM (PostgreSQL)
 // ===============================================
 
 import express from "express";
@@ -14,29 +14,31 @@ import initDatabase from "./init_db.js";
 dotenv.config();
 const app = express();
 
-// ===============================
+// ===============================================
 // MIDDLEWARES
-// ===============================
+// ===============================================
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.use((req, res, next) => {
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  next();
-});
+// Necesario para cookies secure con proxy (Render)
+app.set("trust proxy", 1);
+
+// ===============================================
+// CORS — Permitir frontend de Vercel
+// ===============================================
+const FRONTEND = process.env.FRONTEND_ORIGIN ||
+  "https://www.reservatuhospedajeensantamarta.site";
 
 app.use(
   cors({
-    origin: true,
+    origin: FRONTEND,
     credentials: true,
   })
 );
 
-app.set("trust proxy", 1);
-
-// ===============================
-// SESIONES (POSTGRESQL)
-// ===============================
+// ===============================================
+// SESIONES — PostgreSQL
+// ===============================================
 const PGSessionStore = pgSession(session);
 
 app.use(
@@ -46,50 +48,45 @@ app.use(
       tableName: "sessions",
       createTableIfMissing: true,
     }),
-    secret: process.env.SESSION_SECRET || "cambiar_este_secreto",
+    secret: process.env.SESSION_SECRET || "clave_sesion_local",
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production", // REQUERIDO para Render
       httpOnly: true,
-      maxAge: 1000 * 60 * 60 * 4,
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      maxAge: 1000 * 60 * 60 * 4, // 4 horas
     },
   })
 );
 
-// ===============================
-// HELPERS
-// ===============================
+// ===============================================
+// HELPER — Requiere sesión iniciada
+// ===============================================
 function requireLogin(req, res, next) {
   if (!req.session.user)
     return res.status(401).json({ error: "Debes iniciar sesión" });
   next();
 }
 
-// ===============================
-// AUTH
-// ===============================
+// ===============================================
+// AUTH — LOGIN, REGISTRO, LOGOUT
+// ===============================================
 
 // Registro
 app.post("/api/auth/register", async (req, res) => {
   try {
     const { nombre, correo, password } = req.body;
 
-    if (!nombre || !correo || !password) {
-      return res
-        .status(400)
-        .json({ error: "Faltan campos: nombre, correo, password" });
-    }
+    if (!nombre || !correo || !password)
+      return res.status(400).json({ error: "Faltan datos obligatorios" });
 
-    // verificar si correo ya existe
     const exists = await db.query("SELECT id FROM usuarios WHERE correo=$1", [
       correo,
     ]);
 
-    if (exists.rows.length > 0) {
-      return res.status(409).json({ error: "El correo ya está registrado" });
-    }
+    if (exists.rows.length > 0)
+      return res.status(409).json({ error: "Correo ya registrado" });
 
     const hashed = await bcrypt.hash(password, 10);
 
@@ -100,7 +97,7 @@ app.post("/api/auth/register", async (req, res) => {
 
     res.json({ message: "Registro exitoso" });
   } catch (err) {
-    console.error("❌ ERROR REGISTRO:", err);
+    console.error("❌ REGISTRO ERROR:", err);
     res.status(500).json({ error: "Error registrando usuario" });
   }
 });
@@ -108,10 +105,12 @@ app.post("/api/auth/register", async (req, res) => {
 // Login
 app.post("/api/auth/login", async (req, res) => {
   try {
-    const { correo, password } = req.body;
+    const correo = req.body.correo;
+    const password =
+      req.body.password || req.body.contrasena || req.body["contraseña"];
 
     if (!correo || !password)
-      return res.status(400).json({ error: "Debe enviar correo y contraseña" });
+      return res.status(400).json({ error: "Correo y contraseña requeridos" });
 
     const result = await db.query("SELECT * FROM usuarios WHERE correo=$1", [
       correo,
@@ -123,8 +122,8 @@ app.post("/api/auth/login", async (req, res) => {
     const user = result.rows[0];
 
     const ok = await bcrypt.compare(password, user.contrasena);
-
-    if (!ok) return res.status(401).json({ error: "Contraseña incorrecta" });
+    if (!ok)
+      return res.status(401).json({ error: "Contraseña incorrecta" });
 
     req.session.user = {
       id: user.id,
@@ -132,21 +131,26 @@ app.post("/api/auth/login", async (req, res) => {
       role: user.role,
     };
 
-    res.json({ message: "Login exitoso", user: req.session.user });
+    res.json({
+      message: "Login exitoso",
+      user: req.session.user,
+    });
   } catch (err) {
-    console.error("❌ ERROR LOGIN:", err);
+    console.error("❌ LOGIN ERROR:", err);
     res.status(500).json({ error: "Error en login" });
   }
 });
 
 // Logout
 app.post("/api/auth/logout", (req, res) => {
-  req.session.destroy(() => res.json({ message: "Sesión cerrada" }));
+  req.session.destroy(() =>
+    res.json({ message: "Sesión cerrada correctamente" })
+  );
 });
 
-// ===============================
+// ===============================================
 // PROPIEDADES
-// ===============================
+// ===============================================
 app.get("/api/propiedades", async (req, res) => {
   try {
     const result = await db.query("SELECT * FROM propiedades ORDER BY id ASC");
@@ -173,19 +177,16 @@ app.get("/api/propiedades/:id", async (req, res) => {
   }
 });
 
-// ===============================
+// ===============================================
 // RESERVAS
-// ===============================
+// ===============================================
 app.post("/api/reservas", requireLogin, async (req, res) => {
   try {
     const usuario_id = req.session.user.id;
     const { propiedad_id, fecha_inicio, fecha_fin } = req.body;
 
-    if (!propiedad_id || !fecha_inicio || !fecha_fin) {
-      return res
-        .status(400)
-        .json({ error: "Faltan campos para crear la reserva" });
-    }
+    if (!propiedad_id || !fecha_inicio || !fecha_fin)
+      return res.status(400).json({ error: "Datos incompletos" });
 
     const result = await db.query(
       `INSERT INTO reservas (usuario_id, propiedad_id, fecha_inicio, fecha_fin, estado)
@@ -200,14 +201,14 @@ app.post("/api/reservas", requireLogin, async (req, res) => {
   }
 });
 
-// Obtener reservas por correo
+// Reservas por correo
 app.get("/api/reservas/user/:correo", async (req, res) => {
   try {
-    const u = await db.query("SELECT id FROM usuarios WHERE correo=$1", [
+    const usr = await db.query("SELECT id FROM usuarios WHERE correo=$1", [
       req.params.correo,
     ]);
 
-    if (u.rows.length === 0) return res.json([]);
+    if (usr.rows.length === 0) return res.json([]);
 
     const result = await db.query(
       `SELECT r.id, r.fecha_inicio, r.fecha_fin, r.estado,
@@ -216,7 +217,7 @@ app.get("/api/reservas/user/:correo", async (req, res) => {
        JOIN propiedades p ON p.id = r.propiedad_id
        WHERE r.usuario_id = $1
        ORDER BY r.id DESC`,
-      [u.rows[0].id]
+      [usr.rows[0].id]
     );
 
     res.json(result.rows);
@@ -239,19 +240,43 @@ app.delete("/api/reservas/:id", requireLogin, async (req, res) => {
   }
 });
 
-// ===============================
-// RUTA PRINCIPAL
-// ===============================
-app.get("/", (req, res) => res.send("API Reservas SM OK — PostgreSQL"));
+// ===============================================
+// CONTACTO (Formulario Contacto HTML)
+// ===============================================
+app.post("/api/contact", async (req, res) => {
+  try {
+    const { nombre, email, telefono, mensaje } = req.body;
 
-// ===============================
+    if (!email || !mensaje)
+      return res.status(400).json({ error: "Email y mensaje requeridos" });
+
+    await db.query(
+      "INSERT INTO contactos (nombre, correo, telefono, mensaje) VALUES ($1,$2,$3,$4)",
+      [nombre || null, email, telefono || null, mensaje]
+    );
+
+    res.json({ message: "Mensaje recibido correctamente" });
+  } catch (err) {
+    console.error("❌ ERROR CONTACTO:", err);
+    res.status(500).json({ error: "Error enviando mensaje" });
+  }
+});
+
+// ===============================================
+// ROOT
+// ===============================================
+app.get("/", (req, res) =>
+  res.send("API Reservas SM — PostgreSQL — Server OK")
+);
+
+// ===============================================
 // INICIAR SERVIDOR
-// ===============================
+// ===============================================
 const PORT = process.env.PORT || 3000;
 
 (async () => {
   await initDatabase();
   app.listen(PORT, () =>
-    console.log("🚀 Server running on port " + PORT)
+    console.log("🚀 Backend escuchando en puerto:", PORT)
   );
 })();
