@@ -18,29 +18,30 @@ const app = express();
 // ===============================================
 app.use(express.json());
 
-// CORS CONFIGURADO PARA TU DOMINIO REAL
 app.use(cors({
   origin: [
     "https://reservatuhospedajeensantamarta.site",
-    "https://www.reservatuhospedajeensantamarta.site"
+    "https://www.reservatuhospedajeensantamarta.site",
+    "http://localhost:5500",
+    "http://127.0.0.1:5500"
   ],
   methods: ["GET", "POST", "PUT", "DELETE"],
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true
 }));
 
-// Necesario para preflight con Authorization
 app.options("*", cors());
 
 // Inicializar BD
 initDatabase();
 
+
 // ===============================================
-// MIDDLEWARE — Validación JWT
+// MIDDLEWARE JWT
 // ===============================================
 const verifyToken = (req, res, next) => {
   const token = req.headers["authorization"];
-  
+
   if (!token)
     return res.status(401).json({ error: "Falta token de autenticación" });
 
@@ -48,20 +49,23 @@ const verifyToken = (req, res, next) => {
 
   jwt.verify(realToken, process.env.JWT_SECRET, (err, decoded) => {
     if (err) return res.status(403).json({ error: "Token inválido" });
-
     req.user = decoded;
     next();
   });
 };
 
-// ===============================================
-// LOGIN — Devuelve JWT
-// ===============================================
-app.post("/api/login", async (req, res) => {
-  try {
-    const { email, password } = req.body;
 
-    const result = await db.query("SELECT * FROM usuarios WHERE email=$1", [email]);
+// ===============================================
+// AUTH — LOGIN
+// ===============================================
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const { correo, password } = req.body;
+
+    const result = await db.query(
+      "SELECT * FROM usuarios WHERE email=$1",
+      [correo]
+    );
 
     if (result.rows.length === 0)
       return res.status(401).json({ error: "Usuario no encontrado" });
@@ -74,28 +78,29 @@ app.post("/api/login", async (req, res) => {
       return res.status(401).json({ error: "Contraseña incorrecta" });
 
     const token = jwt.sign(
-      { id: user.id, email: user.email, nombre: user.nombre },
+      { id: user.id, correo: user.email, nombre: user.nombre },
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
 
-    res.json({ token, nombre: user.nombre });
+    res.json({ token, usuario: user });
   } catch (err) {
     console.error("❌ ERROR LOGIN:", err);
     res.status(500).json({ error: "Error en el servidor" });
   }
 });
 
+
 // ===============================================
-// REGISTRO
+// AUTH — REGISTER
 // ===============================================
-app.post("/api/registro", async (req, res) => {
+app.post("/api/auth/register", async (req, res) => {
   try {
-    const { nombre, email, password } = req.body;
+    const { nombre, correo, password } = req.body;
 
     const exists = await db.query(
       "SELECT * FROM usuarios WHERE email=$1",
-      [email]
+      [correo]
     );
 
     if (exists.rows.length > 0)
@@ -105,7 +110,7 @@ app.post("/api/registro", async (req, res) => {
 
     await db.query(
       "INSERT INTO usuarios (nombre, email, password) VALUES ($1, $2, $3)",
-      [nombre, email, hashed]
+      [nombre, correo, hashed]
     );
 
     res.json({ success: true, message: "Usuario registrado correctamente" });
@@ -114,6 +119,7 @@ app.post("/api/registro", async (req, res) => {
     res.status(500).json({ error: "Error registrando usuario" });
   }
 });
+
 
 // ===============================================
 // LISTADO DE PROPIEDADES
@@ -127,6 +133,7 @@ app.get("/api/propiedades", async (req, res) => {
     res.status(500).json({ error: "Error obteniendo propiedades" });
   }
 });
+
 
 // ===============================================
 // PROPIEDAD POR ID
@@ -148,16 +155,17 @@ app.get("/api/propiedades/:id", async (req, res) => {
   }
 });
 
+
 // ===============================================
-// CREAR RESERVA (JWT requerido)
+// CREAR RESERVA
 // ===============================================
 app.post("/api/reservas", verifyToken, async (req, res) => {
   try {
-    const { propiedad_id, fecha_inicio, fecha_fin } = req.body;
+    const { propiedad_id, fecha_inicio, fecha_fin, notas } = req.body;
 
     await db.query(
-      "INSERT INTO reservas (usuario_id, propiedad_id, fecha_inicio, fecha_fin) VALUES ($1, $2, $3, $4)",
-      [req.user.id, propiedad_id, fecha_inicio, fecha_fin]
+      "INSERT INTO reservas (usuario_id, propiedad_id, fecha_inicio, fecha_fin, notas) VALUES ($1, $2, $3, $4, $5)",
+      [req.user.id, propiedad_id, fecha_inicio, fecha_fin, notas]
     );
 
     res.json({ success: true, message: "Reserva creada exitosamente" });
@@ -167,15 +175,16 @@ app.post("/api/reservas", verifyToken, async (req, res) => {
   }
 });
 
+
 // ===============================================
-// VER MIS RESERVAS
+// MIS RESERVAS
 // ===============================================
 app.get("/api/mis-reservas", verifyToken, async (req, res) => {
   try {
     const result = await db.query(
-      `SELECT r.*, p.nombre AS propiedad 
-       FROM reservas r 
-       JOIN propiedades p ON r.propiedad_id = p.id 
+      `SELECT r.*, p.nombre AS propiedad
+       FROM reservas r
+       JOIN propiedades p ON r.propiedad_id = p.id
        WHERE usuario_id=$1`,
       [req.user.id]
     );
@@ -187,6 +196,15 @@ app.get("/api/mis-reservas", verifyToken, async (req, res) => {
   }
 });
 
+
+// ===============================================
+// ROOT
+// ===============================================
+app.get("/", (req, res) => {
+  res.send("Backend de Reservas SM funcionando correctamente ✔️");
+});
+
+
 // ===============================================
 // INICIAR SERVIDOR
 // ===============================================
@@ -194,6 +212,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () =>
   console.log(`🚀 Backend corriendo en puerto ${PORT}`)
 );
-app.get("/", (req, res) => {
-  res.send("Backend de Reservas SM funcionando correctamente ✔️");
-});
