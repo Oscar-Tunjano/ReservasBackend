@@ -1,13 +1,12 @@
 // ===============================================
-// SERVER.JS — Backend Reservas SM (PostgreSQL)
+// SERVER.JS — Backend Reservas SM (Con JWT real)
 // ===============================================
 
 import express from "express";
-import session from "express-session";
-import pgSession from "connect-pg-simple";
 import cors from "cors";
 import dotenv from "dotenv";
 import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
 import { db } from "./db.js";
 import initDatabase from "./init_db.js";
 
@@ -15,145 +14,103 @@ dotenv.config();
 const app = express();
 
 // ===============================================
-// MIDDLEWARES
+// CONFIGURACIÓN
 // ===============================================
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.set("trust proxy", 1);
+app.use(cors({ origin: "*", methods: "GET,POST,PUT,DELETE" }));
+
+// Inicializar BD si no existe
+initDatabase();
 
 // ===============================================
-// CORS — Permitir frontend de Vercel y tu dominio
+// MIDDLEWARE — Validar token JWT
 // ===============================================
-const FRONTEND =
-  process.env.FRONTEND_ORIGIN ||
-  "https://www.reservatuhospedajeensantamarta.site";
+const verifyToken = (req, res, next) => {
+  const token = req.headers["authorization"];
 
-app.use(
-  cors({
-    origin: FRONTEND,
-    credentials: true,
-  })
-);
+  if (!token)
+    return res.status(401).json({ error: "Falta token de autenticación" });
 
-// ===============================================
-// SESIONES — PostgreSQL
-// ===============================================
-const PGSessionStore = pgSession(session);
+  const realToken = token.replace("Bearer ", "");
 
-app.use(
-  session({
-    store: new PGSessionStore({
-      pool: db,
-      tableName: "sessions",
-      createTableIfMissing: true,
-    }),
-    secret: process.env.SESSION_SECRET || "clave_sesion_local",
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      httpOnly: true,
-      maxAge: 1000 * 60 * 60 * 4,
-    },
-  })
-);
+  jwt.verify(realToken, process.env.JWT_SECRET, (err, decoded) => {
+    if (err) return res.status(403).json({ error: "Token inválido" });
+
+    req.user = decoded;
+    next();
+  });
+};
 
 // ===============================================
-// HELPER — Requiere sesión
+// LOGIN (Genera JWT)
 // ===============================================
-function requireLogin(req, res, next) {
-  if (!req.session.user)
-    return res.status(401).json({ error: "Debes iniciar sesión" });
-  next();
-}
-
-// ===============================================
-// AUTH — LOGIN, REGISTRO, LOGOUT
-// ===============================================
-
-// Registro
-app.post("/api/auth/register", async (req, res) => {
+app.post("/api/login", async (req, res) => {
   try {
-    const { nombre, correo, password, contrasena } = req.body;
-    const pass = password || contrasena;
+    const { email, password } = req.body;
 
-    if (!nombre || !correo || !pass)
-      return res.status(400).json({ error: "Faltan datos obligatorios" });
-
-    const exists = await db.query("SELECT id FROM usuarios WHERE correo=$1", [
-      correo,
+    const result = await db.query("SELECT * FROM usuarios WHERE email=$1", [
+      email,
     ]);
 
-    if (exists.rows.length > 0)
-      return res.status(409).json({ error: "Correo ya registrado" });
+    if (result.rows.length === 0)
+      return res.status(401).json({ error: "Usuario no encontrado" });
 
-    const hashed = await bcrypt.hash(pass, 10);
+    const user = result.rows[0];
 
-    await db.query(
-      "INSERT INTO usuarios (nombre, correo, contrasena) VALUES ($1,$2,$3)",
-      [nombre, correo, hashed]
+    const match = await bcrypt.compare(password, user.password);
+
+    if (!match)
+      return res.status(401).json({ error: "Contraseña incorrecta" });
+
+    // Crear token JWT válido por 7 días
+    const token = jwt.sign(
+      { id: user.id, email: user.email, nombre: user.nombre },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
     );
 
-    res.json({ message: "Registro exitoso" });
+    res.json({ token, nombre: user.nombre });
   } catch (err) {
-    console.error("❌ REGISTRO ERROR:", err);
+    console.error("❌ ERROR LOGIN:", err);
+    res.status(500).json({ error: "Error en el servidor" });
+  }
+});
+
+// ===============================================
+// REGISTRO
+// ===============================================
+app.post("/api/registro", async (req, res) => {
+  try {
+    const { nombre, email, password } = req.body;
+
+    const exists = await db.query(
+      "SELECT * FROM usuarios WHERE email=$1",
+      [email]
+    );
+
+    if (exists.rows.length > 0)
+      return res.status(400).json({ error: "El correo ya está registrado" });
+
+    const hashed = await bcrypt.hash(password, 10);
+
+    await db.query(
+      "INSERT INTO usuarios (nombre, email, password) VALUES ($1, $2, $3)",
+      [nombre, email, hashed]
+    );
+
+    res.json({ success: true, message: "Usuario registrado correctamente" });
+  } catch (err) {
+    console.error("❌ ERROR REGISTRO:", err);
     res.status(500).json({ error: "Error registrando usuario" });
   }
 });
 
-// Login
-app.post("/api/auth/login", async (req, res) => {
-  try {
-    const correo = req.body.correo;
-    const password =
-      req.body.password || req.body.contrasena || req.body["contraseña"];
-
-    if (!correo || !password)
-      return res.status(400).json({ error: "Correo y contraseña requeridos" });
-
-    const result = await db.query("SELECT * FROM usuarios WHERE correo=$1", [
-      correo,
-    ]);
-
-    if (result.rows.length === 0)
-      return res.status(404).json({ error: "Usuario no existe" });
-
-    const user = result.rows[0];
-    const ok = await bcrypt.compare(password, user.contrasena);
-
-    if (!ok)
-      return res.status(401).json({ error: "Contraseña incorrecta" });
-
-    req.session.user = {
-      id: user.id,
-      correo: user.correo,
-      role: user.role || "cliente",
-    };
-
-    res.json({
-      message: "Login exitoso",
-      user: req.session.user,
-    });
-  } catch (err) {
-    console.error("❌ LOGIN ERROR:", err);
-    res.status(500).json({ error: "Error en login" });
-  }
-});
-
-// Logout
-app.post("/api/auth/logout", (req, res) => {
-  req.session.destroy(() =>
-    res.json({ message: "Sesión cerrada correctamente" })
-  );
-});
-
 // ===============================================
-// PROPIEDADES
+// LISTA DE PROPIEDADES
 // ===============================================
 app.get("/api/propiedades", async (req, res) => {
   try {
-    const result = await db.query("SELECT * FROM propiedades ORDER BY id ASC");
+    const result = await db.query("SELECT * FROM propiedades");
     res.json(result.rows);
   } catch (err) {
     console.error("❌ ERROR PROPIEDADES:", err);
@@ -161,185 +118,69 @@ app.get("/api/propiedades", async (req, res) => {
   }
 });
 
+// ===============================================
+// OBTENER UNA PROPIEDAD POR ID
+// ===============================================
 app.get("/api/propiedades/:id", async (req, res) => {
   try {
-    const result = await db.query("SELECT * FROM propiedades WHERE id=$1", [
-      req.params.id,
-    ]);
+    const result = await db.query(
+      "SELECT * FROM propiedades WHERE id=$1",
+      [req.params.id]
+    );
 
     if (result.rows.length === 0)
       return res.status(404).json({ error: "Propiedad no encontrada" });
 
     res.json(result.rows[0]);
   } catch (err) {
-    console.error("❌ ERROR PROPIEDAD:", err);
-    res.status(500).json({ error: "Error obteniendo propiedad" });
+    console.error("❌ ERROR:", err);
+    res.status(500).json({ error: "Error obteniendo la propiedad" });
   }
 });
 
 // ===============================================
-// RESERVAS — CLIENTE
+// CREAR RESERVA (SOLO CON TOKEN JWT)
 // ===============================================
-
-// Crear reserva
-app.post("/api/reservas", requireLogin, async (req, res) => {
+app.post("/api/reservas", verifyToken, async (req, res) => {
   try {
-    const usuario_id = req.session.user.id;
     const { propiedad_id, fecha_inicio, fecha_fin } = req.body;
 
-    if (!propiedad_id || !fecha_inicio || !fecha_fin)
-      return res.status(400).json({ error: "Datos incompletos" });
-
-    const result = await db.query(
-      `INSERT INTO reservas (usuario_id, propiedad_id, fecha_inicio, fecha_fin, estado)
-       VALUES ($1,$2,$3,$4,'pendiente') RETURNING *`,
-      [usuario_id, propiedad_id, fecha_inicio, fecha_fin]
+    await db.query(
+      "INSERT INTO reservas (usuario_id, propiedad_id, fecha_inicio, fecha_fin) VALUES ($1, $2, $3, $4)",
+      [req.user.id, propiedad_id, fecha_inicio, fecha_fin]
     );
 
-    res.json(result.rows[0]);
+    res.json({ success: true, message: "Reserva creada exitosamente" });
   } catch (err) {
-    console.error("❌ ERROR CREANDO RESERVA:", err);
-    res.status(500).json({ error: "Error creando reserva" });
+    console.error("❌ ERROR RESERVA:", err);
+    res.status(500).json({ error: "Error creando la reserva" });
   }
 });
 
-// Reservas por correo
-app.get("/api/reservas/user/:correo", async (req, res) => {
+// ===============================================
+// VER MIS RESERVAS (Token requerido)
+// ===============================================
+app.get("/api/mis-reservas", verifyToken, async (req, res) => {
   try {
-    const usr = await db.query("SELECT id FROM usuarios WHERE correo=$1", [
-      req.params.correo,
-    ]);
-
-    if (usr.rows.length === 0) return res.json([]);
-
     const result = await db.query(
-      `SELECT r.id, r.fecha_inicio, r.fecha_fin, r.estado,
-              p.titulo AS propiedad
-       FROM reservas r
-       JOIN propiedades p ON p.id = r.propiedad_id
-       WHERE r.usuario_id = $1
-       ORDER BY r.id DESC`,
-      [usr.rows[0].id]
+      `SELECT r.*, p.nombre AS propiedad 
+       FROM reservas r 
+       JOIN propiedades p ON r.propiedad_id = p.id 
+       WHERE usuario_id=$1`,
+      [req.user.id]
     );
 
     res.json(result.rows);
   } catch (err) {
-    console.error("❌ ERROR OBTENIENDO RESERVAS:", err);
+    console.error("❌ ERROR MIS RESERVAS:", err);
     res.status(500).json({ error: "Error obteniendo reservas" });
   }
 });
-
-// Cancelar reserva
-app.delete("/api/reservas/:id", requireLogin, async (req, res) => {
-  try {
-    await db.query("UPDATE reservas SET estado='cancelada' WHERE id=$1", [
-      req.params.id,
-    ]);
-    res.json({ message: "Reserva cancelada" });
-  } catch (err) {
-    console.error("❌ ERROR CANCELANDO RESERVA:", err);
-    res.status(500).json({ error: "Error cancelando reserva" });
-  }
-});
-
-// ===============================================
-// PANEL ADMINISTRADOR
-// ===============================================
-
-// Ver TODAS las reservas
-app.get("/api/admin/reservations", async (req, res) => {
-  try {
-    const result = await db.query(`
-      SELECT r.id,
-             r.fecha_inicio,
-             r.fecha_fin,
-             r.estado,
-             p.titulo AS propiedad,
-             u.correo AS usuario
-      FROM reservas r
-      JOIN propiedades p ON p.id = r.propiedad_id
-      JOIN usuarios u ON u.id = r.usuario_id
-      ORDER BY r.id DESC
-    `);
-
-    res.json(result.rows);
-  } catch (err) {
-    console.error("❌ ADMIN ERROR GET RESERVAS:", err);
-    res.status(500).json({ error: "Error obteniendo reservas" });
-  }
-});
-
-// Cambiar estado
-app.put("/api/admin/reservations/:id", async (req, res) => {
-  try {
-    const { estado } = req.body;
-
-    if (!estado)
-      return res.status(400).json({ error: "Estado requerido" });
-
-    await db.query(
-      "UPDATE reservas SET estado=$1 WHERE id=$2",
-      [estado, req.params.id]
-    );
-
-    res.json({ message: "Estado actualizado correctamente" });
-  } catch (err) {
-    console.error("❌ ADMIN ERROR UPDATE:", err);
-    res.status(500).json({ error: "Error actualizando estado" });
-  }
-});
-
-// Eliminar reserva
-app.delete("/api/admin/reservations/:id", async (req, res) => {
-  try {
-    await db.query("DELETE FROM reservas WHERE id=$1", [
-      req.params.id,
-    ]);
-
-    res.json({ message: "Reserva eliminada" });
-  } catch (err) {
-    console.error("❌ ADMIN ERROR DELETE:", err);
-    res.status(500).json({ error: "Error eliminando reserva" });
-  }
-});
-
-// ===============================================
-// CONTACTO — Formulario Contacto
-// ===============================================
-app.post("/api/contact", async (req, res) => {
-  try {
-    const { nombre, email, telefono, mensaje } = req.body;
-
-    if (!email || !mensaje)
-      return res.status(400).json({ error: "Email y mensaje requeridos" });
-
-    await db.query(
-      "INSERT INTO contactos (nombre, correo, telefono, mensaje) VALUES ($1,$2,$3,$4)",
-      [nombre || null, email, telefono || null, mensaje]
-    );
-
-    res.json({ message: "Mensaje recibido correctamente" });
-  } catch (err) {
-    console.error("❌ ERROR CONTACTO:", err);
-    res.status(500).json({ error: "Error enviando mensaje" });
-  }
-});
-
-// ===============================================
-// ROOT
-// ===============================================
-app.get("/", (req, res) =>
-  res.send("API Reservas SM — PostgreSQL — Server OK")
-);
 
 // ===============================================
 // INICIAR SERVIDOR
 // ===============================================
 const PORT = process.env.PORT || 3000;
-
-(async () => {
-  await initDatabase();
-  app.listen(PORT, () =>
-    console.log("🚀 Backend escuchando en puerto:", PORT)
-  );
-})();
+app.listen(PORT, () =>
+  console.log(`🚀 Backend corriendo en puerto ${PORT}`)
+);
