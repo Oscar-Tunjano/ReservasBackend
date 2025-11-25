@@ -1,5 +1,5 @@
 // ===============================================
-// SERVER.JS — Backend Reservas SM (Con JWT real)
+// SERVER.JS — Backend Reservas SM (Con JWT)
 // ===============================================
 
 import express from "express";
@@ -14,20 +14,33 @@ dotenv.config();
 const app = express();
 
 // ===============================================
-// CONFIGURACIÓN
+// CONFIGURACIÓN GLOBAL
 // ===============================================
 app.use(express.json());
-app.use(cors({ origin: "*", methods: "GET,POST,PUT,DELETE" }));
 
-// Inicializar BD si no existe
+// CORS CONFIGURADO PARA TU DOMINIO REAL
+app.use(cors({
+  origin: [
+    "https://reservatuhospedajeensantamarta.site",
+    "https://www.reservatuhospedajeensantamarta.site"
+  ],
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true
+}));
+
+// Necesario para preflight con Authorization
+app.options("*", cors());
+
+// Inicializar BD
 initDatabase();
 
 // ===============================================
-// MIDDLEWARE — Validar token JWT
+// MIDDLEWARE — Validación JWT
 // ===============================================
 const verifyToken = (req, res, next) => {
   const token = req.headers["authorization"];
-
+  
   if (!token)
     return res.status(401).json({ error: "Falta token de autenticación" });
 
@@ -42,15 +55,13 @@ const verifyToken = (req, res, next) => {
 };
 
 // ===============================================
-// LOGIN (Genera JWT)
+// LOGIN — Devuelve JWT
 // ===============================================
 app.post("/api/login", async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    const result = await db.query("SELECT * FROM usuarios WHERE email=$1", [
-      email,
-    ]);
+    const result = await db.query("SELECT * FROM usuarios WHERE email=$1", [email]);
 
     if (result.rows.length === 0)
       return res.status(401).json({ error: "Usuario no encontrado" });
@@ -62,7 +73,6 @@ app.post("/api/login", async (req, res) => {
     if (!match)
       return res.status(401).json({ error: "Contraseña incorrecta" });
 
-    // Crear token JWT válido por 7 días
     const token = jwt.sign(
       { id: user.id, email: user.email, nombre: user.nombre },
       process.env.JWT_SECRET,
@@ -106,7 +116,7 @@ app.post("/api/registro", async (req, res) => {
 });
 
 // ===============================================
-// LISTA DE PROPIEDADES
+// LISTADO DE PROPIEDADES
 // ===============================================
 app.get("/api/propiedades", async (req, res) => {
   try {
@@ -119,7 +129,7 @@ app.get("/api/propiedades", async (req, res) => {
 });
 
 // ===============================================
-// OBTENER UNA PROPIEDAD POR ID
+// PROPIEDAD POR ID
 // ===============================================
 app.get("/api/propiedades/:id", async (req, res) => {
   try {
@@ -139,7 +149,7 @@ app.get("/api/propiedades/:id", async (req, res) => {
 });
 
 // ===============================================
-// CREAR RESERVA (SOLO CON TOKEN JWT)
+// CREAR RESERVA (JWT requerido)
 // ===============================================
 app.post("/api/reservas", verifyToken, async (req, res) => {
   try {
@@ -158,7 +168,7 @@ app.post("/api/reservas", verifyToken, async (req, res) => {
 });
 
 // ===============================================
-// VER MIS RESERVAS (Token requerido)
+// VER MIS RESERVAS
 // ===============================================
 app.get("/api/mis-reservas", verifyToken, async (req, res) => {
   try {
